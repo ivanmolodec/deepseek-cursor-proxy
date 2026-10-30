@@ -168,6 +168,18 @@ uv sync --dev
 uv run pre-commit run --all-files
 ```
 
+## Benchmarking
+
+`scripts/bench.py` compares latency and throughput through the proxy with the direct DeepSeek API. It sends the same kind of chat completion to both endpoints in alternating order and reports medians, so a transient slowdown does not always hit the same side. Each request carries a unique nonce, which bypasses DeepSeek's context cache and keeps both paths equally cold.
+
+```bash
+export DEEPSEEK_API_KEY=sk-...
+export DCP_PROXY_URL=https://your-proxy.example/v1   # or pass --proxy-url
+uv run python scripts/bench.py
+```
+
+Useful flags: `--rounds` (requests per path), `--max-tokens`, `--model`, `--no-stream`, `--only proxy|direct`, `--json`. Because thinking-mode reasoning tokens count towards `max_tokens`, keep the cap high enough for the answer to start within the budget.
+
 ## Debugging
 
 Run with verbose output:
