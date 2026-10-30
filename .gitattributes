@@ -1,0 +1,2 @@
+# Deployment helpers run on the Linux host; a CRLF checkout would break them.
+*.sh text eol=lf
