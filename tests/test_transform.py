@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest import mock
 
 from deepseek_cursor_proxy.config import ProxyConfig
 from deepseek_cursor_proxy.reasoning_store import (
@@ -580,6 +581,59 @@ class CrossModeAndModelTests(unittest.TestCase):
         self.assertEqual(prepared.recovery_dropped_messages, 0)
         self.assertEqual(len(prepared.payload["messages"]), 5)
         self.assertEqual(prepared.payload["messages"][2]["reasoning_content"], "")
+
+    def test_scope_hash_is_skipped_for_messages_without_tool_context(self) -> None:
+        # conversation_scope serializes and hashes the whole transcript. Doing
+        # that for every assistant message made preparation quadratic in the
+        # length of the session, so the count must not grow with it.
+        tool_call = {
+            "id": "call_scope",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": "{}"},
+        }
+        config = ProxyConfig(missing_reasoning_strategy="synthesize")
+
+        def payload(assistant_turns: int, with_tool_turn: bool) -> dict:
+            messages: list[dict] = [
+                {"role": "system", "content": "Agent mode."},
+                {"role": "user", "content": "start"},
+            ]
+            for step in range(assistant_turns):
+                if with_tool_turn and step == 0:
+                    messages.append(
+                        {"role": "assistant", "content": "", "tool_calls": [tool_call]}
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "content": "data",
+                        }
+                    )
+                else:
+                    messages.append({"role": "assistant", "content": f"answer {step}"})
+                messages.append({"role": "user", "content": f"next {step}"})
+            return {"model": "deepseek-v4-pro", "messages": messages}
+
+        with mock.patch(
+            "deepseek_cursor_proxy.transform.conversation_scope",
+            wraps=conversation_scope,
+        ) as scope:
+            prepare_upstream_request(payload(1, False), config, self.store)
+            short_history_calls = scope.call_count
+            scope.reset_mock()
+            prepare_upstream_request(payload(8, False), config, self.store)
+            long_history_calls = scope.call_count
+            scope.reset_mock()
+            prepare_upstream_request(payload(8, True), config, self.store)
+            tool_turn_calls = scope.call_count
+
+        # Two calls record the scopes a response is filed under; no assistant
+        # message here needs a lookup, so a longer history changes nothing.
+        self.assertEqual(short_history_calls, 2)
+        self.assertEqual(long_history_calls, short_history_calls)
+        # A message that does ask the store costs exactly one extra scope.
+        self.assertEqual(tool_turn_calls, long_history_calls + 1)
 
     def test_portable_turn_cache_isolated_for_reused_tool_call_id(self) -> None:
         # Two different conversations both happen to reuse the same
