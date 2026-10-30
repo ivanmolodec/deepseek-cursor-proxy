@@ -278,7 +278,16 @@ def normalize_message(
                 needs_reasoning = assistant_needs_reasoning_for_tool_context(
                     normalized, prior_messages
                 )
-                lookup_scope = conversation_scope(prior_messages, cache_namespace)
+                # The scope serializes and hashes the whole history, so it is
+                # only worth computing for messages that will look something up.
+                # Most assistant messages do not, and a long session has
+                # hundreds of them: paying for each one turned preparation into
+                # a quadratic scan of the transcript.
+                lookup_scope = (
+                    conversation_scope(prior_messages, cache_namespace)
+                    if needs_reasoning
+                    else ""
+                )
                 lookup_keys = (
                     reasoning_lookup_keys(
                         normalized,
