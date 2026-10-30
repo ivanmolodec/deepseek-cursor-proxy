@@ -12,7 +12,6 @@ import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 import zlib
 
 from .config import (
@@ -28,6 +27,7 @@ from .logging import (
 from .reasoning_store import ReasoningStore, conversation_scope
 from .streaming import CursorReasoningDisplayAdapter, StreamAccumulator
 from .trace import TraceRequest, TraceWriter
+from .transport import UpstreamConnectionPool
 from .tunnel import NgrokTunnel, local_tunnel_target
 from .transform import (
     RECOVERY_NOTICE_CONTENT,
@@ -50,6 +50,16 @@ class DeepSeekProxyServer(ThreadingHTTPServer):
     config: ProxyConfig
     reasoning_store: ReasoningStore
     trace_writer: TraceWriter | None
+    upstream_pool: UpstreamConnectionPool
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.upstream_pool = UpstreamConnectionPool()
+
+    def server_close(self) -> None:
+        # Idle upstream sockets outlive the request that opened them.
+        self.upstream_pool.close()
+        super().server_close()
 
 
 class DeepSeekProxyHandler(BaseHTTPRequestHandler):
@@ -66,6 +76,10 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
     @property
     def trace_writer(self) -> TraceWriter | None:
         return getattr(self.server, "trace_writer", None)
+
+    @property
+    def upstream_pool(self) -> UpstreamConnectionPool:
+        return self.server.upstream_pool  # type: ignore[return-value]
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return
@@ -230,13 +244,6 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 headers=upstream_headers,
                 body_bytes=upstream_body,
             )
-        request = Request(
-            upstream_url,
-            data=upstream_body,
-            method="POST",
-            headers=upstream_headers,
-        )
-
         if self.config.verbose:
             log_send_summary(prepared)
         spinner = TerminalSpinner(
@@ -247,7 +254,13 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         try:
             if self.config.verbose:
                 LOG.info("forwarding to %s", upstream_url)
-            response = urlopen(request, timeout=self.config.request_timeout)
+            response = self.upstream_pool.request(
+                "POST",
+                upstream_url,
+                body=upstream_body,
+                headers=upstream_headers,
+                timeout=self.config.request_timeout,
+            )
         except HTTPError as exc:
             spinner.stop()
             LOG.warning(
