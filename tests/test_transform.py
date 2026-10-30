@@ -552,6 +552,35 @@ class CrossModeAndModelTests(unittest.TestCase):
             "The tool result is enough to answer.",
         )
 
+    def test_synthesize_strategy_keeps_history_when_reasoning_is_missing(self) -> None:
+        tool_call = {
+            "id": "call_missing",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": "{}"},
+        }
+        prepared = prepare_upstream_request(
+            {
+                "model": "deepseek-v4-pro",
+                "messages": [
+                    {"role": "system", "content": "Agent mode."},
+                    {"role": "user", "content": "read it"},
+                    {"role": "assistant", "content": "", "tool_calls": [tool_call]},
+                    {"role": "tool", "tool_call_id": "call_missing", "content": "data"},
+                    {"role": "user", "content": "now summarize"},
+                ],
+            },
+            ProxyConfig(missing_reasoning_strategy="synthesize"),
+            self.store,
+        )
+
+        # DeepSeek accepts an empty reasoning_content, so the proxy fills the
+        # gap instead of dropping history (which makes the model start over).
+        self.assertEqual(prepared.synthesized_reasoning_messages, 1)
+        self.assertEqual(prepared.missing_reasoning_messages, 0)
+        self.assertEqual(prepared.recovery_dropped_messages, 0)
+        self.assertEqual(len(prepared.payload["messages"]), 5)
+        self.assertEqual(prepared.payload["messages"][2]["reasoning_content"], "")
+
     def test_portable_turn_cache_isolated_for_reused_tool_call_id(self) -> None:
         # Two different conversations both happen to reuse the same
         # tool_call.id. Cache must NOT cross-contaminate.
