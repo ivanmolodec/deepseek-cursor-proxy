@@ -551,6 +551,15 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         body = read_response_body(exc)
         if self.config.verbose:
             log_bytes("upstream error body", body)
+        else:
+            # The body is forwarded to the client verbatim, so it is the only
+            # record of why the turn failed. Keep one line of it without
+            # switching the whole proxy into verbose mode.
+            LOG.warning(
+                "upstream error body status=%s %s",
+                exc.code,
+                describe_error_body(body),
+            )
         headers = {
             "Content-Type": exc.headers.get("Content-Type", "application/json"),
             "Content-Length": str(len(body)),
@@ -1014,6 +1023,29 @@ def log_bytes(label: str, body: bytes) -> None:
         LOG.info("%s:\n%s", label, body.decode("utf-8", errors="replace"))
         return
     log_json(label, payload)
+
+
+def describe_error_body(body: bytes) -> str:
+    """Collapse an upstream error payload into one log line.
+
+    The client receives the body untouched, so the log needs enough of it to
+    tell a rate limit from an expired key or a bad request: the ``error``
+    fields when the payload is JSON, the raw text otherwise.
+    """
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return "body=" + body.decode("utf-8", errors="replace").replace("\n", " ")[:300]
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, dict):
+        parts = [
+            f"{name}={error[name]}"
+            for name in ("type", "code", "message")
+            if error.get(name)
+        ]
+        if parts:
+            return " ".join(parts)[:400]
+    return "body=" + json.dumps(payload, ensure_ascii=False)[:300]
 
 
 def usage_from_body(body: bytes) -> dict[str, Any] | None:
