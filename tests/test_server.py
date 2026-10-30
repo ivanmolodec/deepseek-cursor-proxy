@@ -31,6 +31,7 @@ from deepseek_cursor_proxy.logging import (
     TerminalSpinner,
 )
 from deepseek_cursor_proxy.reasoning_store import ReasoningStore
+from deepseek_cursor_proxy.streaming import StreamAccumulator
 from deepseek_cursor_proxy.server import (
     DeepSeekProxyHandler,
     DeepSeekProxyServer,
@@ -297,6 +298,36 @@ class HandlerStubTests(unittest.TestCase):
         self.assertIn("upstream error body status=429", logged)
         self.assertIn("User API Key Rate limit exceeded", logged)
         self.assertEqual(handler.wfile.writes[-1], body)
+
+    def test_stream_error_frame_is_logged_and_forwarded(self) -> None:
+        handler = _make_handler_stub(_FakeConsole(tty=False))
+        frame = json.dumps(
+            {
+                "error": {
+                    "message": "User API Key Rate limit exceeded",
+                    "type": "rate_limit_error",
+                }
+            }
+        ).encode("utf-8")
+        line = b"data: " + frame + b"\n"
+        try:
+            with self.assertLogs("deepseek_cursor_proxy", level="WARNING") as captured:
+                rewritten, done, _, _ = handler._rewrite_sse_line(
+                    line,
+                    "deepseek-v4-pro",
+                    StreamAccumulator(),
+                    "ns",
+                    [],
+                    None,
+                )
+        finally:
+            handler.server.reasoning_store.close()
+        logged = "\n".join(captured.output)
+        self.assertIn("upstream stream error", logged)
+        self.assertIn("User API Key Rate limit exceeded", logged)
+        self.assertFalse(done)
+        forwarded = json.loads(rewritten.split(b"data:", 1)[1])
+        self.assertEqual(forwarded, json.loads(frame))
 
     def test_regular_response_handles_client_disconnect(self) -> None:
         handler = _make_handler_stub(_BrokenPipeWfile())

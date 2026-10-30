@@ -827,6 +827,11 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError):
             return line, False, recovery_notice, None
 
+        if isinstance(chunk, dict) and chunk.get("error"):
+            # DeepSeek can abort a turn inside a 200 stream. The frame reaches
+            # the client untouched, so it is the only trace of the failure.
+            LOG.warning("upstream stream error %s", describe_error_body(data))
+
         if isinstance(chunk, dict):
             if recovery_notice and inject_recovery_notice(chunk, recovery_notice):
                 recovery_notice = None
