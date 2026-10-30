@@ -581,6 +581,68 @@ class CrossModeAndModelTests(unittest.TestCase):
         self.assertEqual(len(prepared.payload["messages"]), 5)
         self.assertEqual(prepared.payload["messages"][2]["reasoning_content"], "")
 
+    def test_compacted_summary_and_recent_turns_survive_reasoning_loss(self) -> None:
+        # Cursor compacts a long session by replacing the old transcript with a
+        # summary and keeping the latest tool turns. Their reasoning_content is
+        # no longer reachable, but neither the summary nor any other message may
+        # be dropped: DeepSeek accepts an empty reasoning_content string.
+        summary = (
+            "[Summary of previous conversation]\n"
+            "Refactored auth.py; tests pass; still to do: fix logout."
+        )
+        old_tool_call = {
+            "id": "call_compacted_1",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": '{"path": "auth.py"}'},
+        }
+        recent_tool_call = {
+            "id": "call_compacted_2",
+            "type": "function",
+            "function": {"name": "read_file", "arguments": '{"path": "test_auth.py"}'},
+        }
+        messages = [
+            {"role": "system", "content": "Agent mode."},
+            {"role": "user", "content": summary},
+            {"role": "user", "content": "fix the old parser"},
+            {"role": "assistant", "content": "", "tool_calls": [old_tool_call]},
+            {
+                "role": "tool",
+                "tool_call_id": "call_compacted_1",
+                "content": "auth code",
+            },
+            {"role": "assistant", "content": "Parser now accepts CRLF."},
+            {"role": "user", "content": "add a test"},
+            {"role": "assistant", "content": "", "tool_calls": [recent_tool_call]},
+            {
+                "role": "tool",
+                "tool_call_id": "call_compacted_2",
+                "content": "test code",
+            },
+            {"role": "user", "content": "what is left?"},
+        ]
+
+        prepared = prepare_upstream_request(
+            {"model": "deepseek-v4-pro", "messages": messages},
+            ProxyConfig(),
+            self.store,
+        )
+
+        sent = prepared.payload["messages"]
+        self.assertEqual(prepared.synthesized_reasoning_messages, 3)
+        self.assertEqual(prepared.missing_reasoning_messages, 0)
+        self.assertEqual(prepared.recovery_dropped_messages, 0)
+        self.assertEqual(len(sent), len(messages))
+        self.assertEqual([m["role"] for m in sent], [m["role"] for m in messages])
+        self.assertEqual([m["content"] for m in sent], [m["content"] for m in messages])
+        self.assertTrue(
+            sent[1]["content"].startswith("[Summary of previous conversation]")
+        )
+        # Assistant turns that follow tool results also need a reasoning string.
+        for index in (3, 5, 7):
+            self.assertEqual(sent[index]["reasoning_content"], "")
+        self.assertEqual(sent[4]["tool_call_id"], "call_compacted_1")
+        self.assertEqual(sent[8]["tool_call_id"], "call_compacted_2")
+
     def test_portable_turn_cache_isolated_for_reused_tool_call_id(self) -> None:
         # Two different conversations both happen to reuse the same
         # tool_call.id. Cache must NOT cross-contaminate.
