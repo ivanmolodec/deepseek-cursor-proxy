@@ -597,6 +597,14 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         body = read_response_body(response)
         upstream_body = body
         usage = usage_from_body(upstream_body)
+        upstream_status = getattr(response, "status", 200)
+        upstream_content_type = response.headers.get("Content-Type", "application/json")
+        upstream_headers = response_headers(response)
+        # The body is in memory, so the socket can serve the next turn now.
+        # The enclosing `with response` would release it only after the body
+        # reaches the client, which left the pool empty for as long as the
+        # write took and made reuse depend on timing.
+        response.close()
         try:
             body = rewrite_response_body(
                 body,
@@ -618,13 +626,13 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             log_bytes("cursor response body", body)
 
         headers = {
-            "Content-Type": response.headers.get("Content-Type", "application/json"),
+            "Content-Type": upstream_content_type,
             "Content-Length": str(len(body)),
         }
         if trace is not None:
             trace.record_upstream_response(
-                status=getattr(response, "status", 200),
-                headers=response_headers(response),
+                status=upstream_status,
+                headers=upstream_headers,
                 body=upstream_body,
                 stream=False,
             )
@@ -635,13 +643,13 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             if isinstance(upstream_payload, dict):
                 trace.record_usage(upstream_payload.get("usage"))
             trace.record_cursor_response(
-                status=getattr(response, "status", 200),
+                status=upstream_status,
                 headers=headers,
                 body=body,
             )
 
         sent_headers = self._send_response_headers(
-            getattr(response, "status", 200),
+            upstream_status,
             [
                 ("Content-Type", headers["Content-Type"]),
                 ("Content-Length", headers["Content-Length"]),

@@ -56,6 +56,9 @@ class _FakeResponse:
     def read(self) -> bytes:
         return self._body.read()
 
+    def close(self) -> None:
+        self._body.close()
+
 
 class _FakeStreamingResponse:
     status = 200
